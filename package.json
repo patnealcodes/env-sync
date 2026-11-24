@@ -1,0 +1,29 @@
+{
+  "name": "env-example-sync",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Rebase local dotenv values onto an example without printing secrets.",
+  "type": "module",
+  "bin": {
+    "env-sync": "dist/cli.js"
+  },
+  "exports": "./dist/sync.js",
+  "types": "./dist/sync.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
+    "test": "npm run build && vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.17",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  }
+}
