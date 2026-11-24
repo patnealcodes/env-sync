@@ -1,34 +1,60 @@
 #!/usr/bin/env node
+import { loadBaseline } from "./git.js";
+import type { Baseline } from "./dotenv.js";
 import { loadSettings } from "./settings.js";
 import { createInterface } from "node:readline";
-import { syncWorkflow, type SyncResult } from "./workflow.js";
+import { syncWorkflow, type SyncResult, type Prompt } from "./workflow.js";
 
 const usage =
-  "Usage: env-sync [--json] [--no-backup] [<example-file> <local-file>]";
+  "Usage: env-sync [--json] [--no-backup] [--since <ref>] [--remove-key NAME] [<example-file> <local-file>]";
 const helpText =
   usage +
-  "\nWith no paths, sync .env.example to ENV_SYNC_TARGET_FILES (default: .env). Settings come from .env in the working directory.\n--json emits one value-free result per target. --no-backup skips the backup and confirmation.";
+  "\nWith no paths, sync .env.example to ENV_SYNC_TARGET_FILES (default: .env). Settings come from .env in the working directory.\n--json emits one value-free result per target. --no-backup skips backup creation, not removal consent.\n--since compares example defaults with a Git revision. Repeat --remove-key NAME to authorize specific removals for one target.";
 const args: string[] = [];
 let json = false,
   skipBackup = false,
   help = false,
   invalidOption = false,
   endOptions = false;
-for (const arg of process.argv.slice(2)) {
+let since: string | undefined;
+const permitted = new Set<string>();
+const argv = process.argv.slice(2);
+for (let i = 0; i < argv.length; i++) {
+  const arg = argv[i];
+  if (arg === undefined) continue;
   if (!endOptions && arg === "--") endOptions = true;
   else if (!endOptions && arg === "--json") json = true;
   else if (!endOptions && arg === "--no-backup") skipBackup = true;
-  else if (!endOptions && arg === "--help") help = true;
+  else if (!endOptions && (arg === "--since" || arg === "--remove-key")) {
+    const value = argv[i + 1];
+    if (!value || value.startsWith("-")) invalidOption = true;
+    else {
+      i++;
+      if (arg === "--since" && since === undefined) since = value;
+      else if (arg === "--remove-key" && /^[A-Za-z_][A-Za-z_0-9]*$/.test(value))
+        permitted.add(value);
+      else invalidOption = true;
+    }
+  } else if (!endOptions && arg === "--help") help = true;
   else if (!endOptions && arg.startsWith("-")) invalidOption = true;
   else args.push(arg);
 }
 
-async function confirm(removed: readonly string[]) {
+async function confirm({ kind, removed }: Prompt) {
+  const deleting = kind === "removal";
   console.error(
-    paint("!! WARNING: NO AUTOMATIC BACKUP !!", "1;97;41", process.stderr),
+    paint(
+      deleting
+        ? "!! WARNING: LOCAL KEYS WOULD BE REMOVED !!"
+        : "!! WARNING: NO AUTOMATIC BACKUP !!",
+      "1;97;41",
+      process.stderr,
+    ),
   );
   console.error(
-    "Your local file has not been replaced. Back it up to an approved private location before continuing.",
+    deleting
+      ? "These keys are absent from the example. Decline to keep this file untouched."
+      : "Your local file has not been replaced. Back it up to an approved private location before continuing.",
   );
   console.error(
     `Keys to remove (${removed.length}): ${removed.join(", ") || "none"}`,
@@ -44,7 +70,9 @@ async function confirm(removed: readonly string[]) {
       reader.once("close", () => resolve(false));
       reader.once("error", () => resolve(false));
       reader.question(
-        "Continue without an automatic backup? [y/N] ",
+        deleting
+          ? "Remove these keys and continue? [y/N] "
+          : "Continue without an automatic backup? [y/N] ",
         (answer) => resolve(answer.trim().toLowerCase() === "y"),
       );
     });
@@ -57,6 +85,7 @@ async function run(
   example: string,
   local: string,
   backupDir: string | undefined,
+  baseline: Baseline | undefined,
 ): Promise<SyncResult> {
   const interactive =
     !json &&
@@ -68,12 +97,18 @@ async function run(
     local,
     skipBackup ? "skip" : "save",
     backupDir,
+    baseline,
   );
   let step = work.next();
   while (!step.done) {
     let approved = false;
     try {
-      if (interactive) approved = await confirm(step.value);
+      if (
+        step.value.kind === "removal" &&
+        step.value.removed.every((key) => permitted.has(key))
+      )
+        approved = true;
+      else if (interactive) approved = await confirm(step.value);
     } catch {
       /* An unreadable or disconnected terminal never grants consent. */
     }
@@ -102,6 +137,8 @@ function report(result: SyncResult) {
     console.error(
       paint(title, "1;97;41", process.stderr) + "\n" + result.message,
     );
+    if (result.code === "REMOVAL_CONFIRMATION_REQUIRED")
+      console.error("Keys to remove: " + result.removed.join(", "));
   } else {
     const statusColor = { created: "1;32", updated: "1;33", unchanged: "2" };
     console.log(
@@ -127,6 +164,17 @@ function report(result: SyncResult) {
         line += (line ? ", " : "") + key;
       }
       console.log("    " + line);
+    }
+    if (result.review?.length) {
+      const descriptions = {
+        DEFAULT_ADDED: "example now provides a default; local value kept",
+        PREVIOUS_DEFAULT: "still matches the previous default",
+        OVERRIDE: "example default changed; check your local override",
+        KEY_ADDED: "new example key; existing local value kept",
+      };
+      console.log("  " + paint(`! Review (${result.review.length})`, "1;33"));
+      for (const item of result.review)
+        console.log(`    ${item.key} — ${descriptions[item.reason]}`);
     }
     if (result.status === "updated")
       console.log(
@@ -167,6 +215,17 @@ async function main() {
   )
     return report({ ok: false, code: "USAGE", message: usage });
   const targets = local ? [local] : config.targets;
+  if (permitted.size && targets.length !== 1)
+    return report({
+      ok: false,
+      code: "USAGE",
+      message: "Use --remove-key with a single target to scope your approval.",
+    });
+  const baseline =
+    since === undefined
+      ? undefined
+      : loadBaseline(example ?? ".env.example", since);
+  if (baseline && !baseline.ok) return report(baseline);
   if (!json)
     console.log(
       `${paint("env-sync", "1;36")} · ${targets.length} ${targets.length === 1 ? "file" : "files"}`,
@@ -183,7 +242,12 @@ async function main() {
       );
     }
     const status = report(
-      await run(example ?? ".env.example", target, config.backupDir),
+      await run(
+        example ?? ".env.example",
+        target,
+        config.backupDir,
+        baseline?.tokens,
+      ),
     );
     if (status !== 0) return status;
   }

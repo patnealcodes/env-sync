@@ -1,13 +1,16 @@
+import { parse } from "./dotenv.js";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync } from "node:fs";
-import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
+import {
+  basename,
+  delimiter,
+  dirname,
+  isAbsolute,
+  join,
+  resolve,
+} from "node:path";
 
-/** A refusal message is static and never includes Git diagnostics or paths. */
-export function gitGuard(
-  path: string,
-  policy: "untracked-ignored" | "outside",
-): string | undefined {
-  const dir = dirname(path);
+function gitIn(dir: string) {
   // An alternate repository or index could disagree with discovery at the target.
   if (
     Object.keys(process.env).some((k) =>
@@ -16,7 +19,7 @@ export function gitGuard(
       ),
     )
   ) {
-    return "Custom Git repository, index or command configuration is active. Retry in a normal shell so protection can be verified.";
+    return undefined;
   }
   // Honor configured global/system ignores; don't inherit tracing or pathspec overrides.
   const env = Object.fromEntries(
@@ -30,12 +33,10 @@ export function gitGuard(
     .filter((p) => isAbsolute(p))
     .map((p) => join(p, process.platform === "win32" ? "git.exe" : "git"))
     .find((p) => existsSync(p));
-  const unknown =
-    "Cannot verify Git protection. Check that Git is installed and the repository and index are accessible.";
-  if (!executable) return unknown;
-  const git = (...args: string[]) =>
+  if (!executable) return undefined;
+  return (...args: string[]) =>
     spawnSync(executable, ["-c", "core.fsmonitor=false", "-C", dir, ...args], {
-      encoding: "utf8",
+      maxBuffer: 8 * 1024 * 1024,
       windowsHide: true,
       timeout: 10000,
       env: {
@@ -43,13 +44,64 @@ export function gitGuard(
         LC_ALL: "C",
         GIT_DISCOVERY_ACROSS_FILESYSTEM: "1",
         GIT_OPTIONAL_LOCKS: "0",
+        GIT_NO_LAZY_FETCH: "1",
       },
     });
+}
+
+/** Resolve the revision once. Read a literal blob at the example's path, never a diff or filter. */
+export function loadBaseline(example: string, ref: string) {
+  const unavailable = {
+    ok: false,
+    code: "BASELINE_UNAVAILABLE",
+    message:
+      "Cannot read the historical example. Choose a local Git ref containing this example at the same path, or omit --since. No files were synced.",
+  } as const;
+  try {
+    const path = resolve(example);
+    const git = gitIn(dirname(path));
+    if (!git) return unavailable;
+    const tree = git(
+      "rev-parse",
+      "--verify",
+      "--end-of-options",
+      ref + "^{tree}",
+    );
+    const oid = tree.stdout?.toString().trim();
+    if (
+      tree.status !== 0 ||
+      !oid ||
+      !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(oid)
+    )
+      return unavailable;
+    const blob = git("cat-file", "blob", oid + ":./" + basename(path));
+    if (blob.status !== 0 || blob.error) return unavailable;
+    return parse(
+      new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+        blob.stdout,
+      ),
+      "Historical example",
+    );
+  } catch {
+    return unavailable;
+  }
+}
+
+/** A refusal message is static and never includes Git diagnostics or paths. */
+export function gitGuard(
+  path: string,
+  policy: "untracked-ignored" | "outside",
+): string | undefined {
+  const dir = dirname(path);
+  const git = gitIn(dir);
+  const unknown =
+    "Cannot verify Git protection. Use a normal shell with Git installed and an accessible repository and index.";
+  if (!git) return unknown;
   const probe = git("rev-parse", "--is-inside-work-tree");
   if (
     probe.status === 128 &&
     /^fatal: not a git repository \(or any of the parent directories\): \.git\s*$/.test(
-      probe.stderr,
+      probe.stderr.toString(),
     )
   ) {
     // Git can report "not a repository" for a damaged/unreadable .git.
@@ -62,7 +114,8 @@ export function gitGuard(
       if (dirname(p) === p) return undefined;
     }
   }
-  if (probe.status !== 0 || probe.stdout.trim() !== "true") return unknown;
+  if (probe.status !== 0 || probe.stdout.toString().trim() !== "true")
+    return unknown;
   if (policy === "outside")
     return "The backup location is inside a Git repository. Set ENV_SYNC_BACKUP_DIR to a dedicated private directory outside Git.";
   const file = "./" + basename(path);

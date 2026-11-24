@@ -15,7 +15,10 @@ type Invalid = {
 };
 
 /** Parse literal value spans without evaluating, expanding or logging the input. */
-export function parse(text: string, role: "Example" | "Local file") {
+export function parse(
+  text: string,
+  role: "Example" | "Local file" | "Historical example",
+) {
   const tokens = new Map<string, Token>();
   let i = text.startsWith("\uFEFF") ? 1 : 0;
   function invalid(reason: string): Invalid {
@@ -78,18 +81,52 @@ export function parse(text: string, role: "Example" | "Local file") {
   return { ok: true, tokens } as const;
 }
 
+/** Names and reasons only; comparison inputs must never be rendered. */
+export type Review = {
+  readonly key: string;
+  readonly reason:
+    | "DEFAULT_ADDED"
+    | "PREVIOUS_DEFAULT"
+    | "OVERRIDE"
+    | "KEY_ADDED";
+};
+/** Historical tokens, read once per invocation. */
+export type Baseline = ReadonlyMap<string, Token>;
+
+function literal(raw: string) {
+  return /^['"`]/.test(raw) ? raw.slice(1, -1) : raw;
+}
+
 /** Replace only template value spans. The resulting text is secret; never render it. */
-export function merge(example: string, local: string) {
+export function merge(example: string, local: string, baseline?: Baseline) {
   const template = parse(example, "Example");
   if (!template.ok) return template;
   const existing = parse(local, "Local file");
   if (!existing.ok) return existing;
+  const review: Review[] = [];
   let last = 0;
   const chunks: string[] = [],
     added: string[] = [],
     preserved: string[] = [];
   for (const [key, token] of template.tokens) {
     const old = existing.tokens.get(key);
+    if (baseline && old) {
+      const prior = baseline.get(key);
+      const before = prior && literal(prior.raw),
+        now = literal(token.raw),
+        kept = literal(old.raw);
+      if (before !== now && kept !== now) {
+        const reason =
+          before === undefined
+            ? "KEY_ADDED"
+            : before === ""
+              ? "DEFAULT_ADDED"
+              : kept === before
+                ? "PREVIOUS_DEFAULT"
+                : "OVERRIDE";
+        review.push({ key, reason });
+      }
+    }
     (old ? preserved : added).push(key);
     chunks.push(example.slice(last, token.start), old?.raw ?? token.raw);
     last = token.end;
@@ -101,6 +138,7 @@ export function merge(example: string, local: string) {
   return {
     ok: true,
     text: chunks.join(""),
+    ...(baseline ? { review } : {}),
     keys: { added, preserved, removed },
   } as const;
 }

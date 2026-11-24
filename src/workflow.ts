@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { saveBackup } from "./backup.js";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { merge, type Keys } from "./dotenv.js";
+import { merge, type Keys, type Baseline, type Review } from "./dotenv.js";
 import { gitGuard } from "./git.js";
 import { privateWrite, protect } from "./private-files.js";
 
@@ -24,6 +24,7 @@ type Code =
   | "GIT_SAFETY"
   | "INVALID_ENV"
   | "UNSAFE_PATH"
+  | "BASELINE_UNAVAILABLE"
   | "BUSY"
   | "BACKUP_UNAVAILABLE"
   | "CHANGED"
@@ -36,7 +37,17 @@ type Failure = {
 /** Value-free result for manual tools. Only an update produces a backup. */
 export type SyncResult =
   | Failure
-  | ({ readonly ok: true; readonly keys: Keys } & (
+  | {
+      readonly ok: false;
+      readonly code: "REMOVAL_CONFIRMATION_REQUIRED";
+      readonly message: string;
+      readonly removed: readonly string[];
+    }
+  | ({
+      readonly ok: true;
+      readonly keys: Keys;
+      readonly review?: readonly Review[];
+    } & (
       | { readonly status: "created" | "unchanged" }
       | { readonly status: "updated"; readonly backup: string | null }
     ));
@@ -107,13 +118,20 @@ export function snapshot(path: string) {
   }
 }
 
+/** Separate consent decisions. Neither approval implies the other. */
+export type Prompt = {
+  readonly kind: "removal" | "backup";
+  readonly removed: readonly string[];
+};
+
 /** Holds one validated plan and its lock across a possible consent prompt. */
 export function* syncWorkflow(
   exampleFile: string,
   localFile: string,
   backupPolicy: "save" | "skip" = "save",
   backupDir = process.env.ENV_SYNC_BACKUP_DIR || undefined,
-): Generator<readonly string[], SyncResult, boolean> {
+  baseline?: Baseline,
+): Generator<Prompt, SyncResult, boolean> {
   let operation =
     "resolve the input paths. Check that both parent directories exist";
   try {
@@ -153,12 +171,28 @@ export function* syncWorkflow(
           "Example and destination must be different files.",
         );
     }
-    const plan = merge(source.text, local.text ?? "");
+    const plan = merge(source.text, local.text ?? "", baseline);
     if (!plan.ok) return plan;
     if (Buffer.byteLength(plan.text) > 8 * 1024 * 1024)
       return fail("INVALID_ENV", "Merged output exceeds the 8 MiB limit.");
+    const summary = {
+      keys: plan.keys,
+      ...(plan.review ? { review: plan.review } : {}),
+    };
     if (plan.text === local.text)
-      return { ok: true, status: "unchanged", keys: plan.keys };
+      return { ok: true, status: "unchanged", ...summary };
+    if (
+      plan.keys.removed.length &&
+      (yield { kind: "removal", removed: plan.keys.removed }) !== true
+    ) {
+      return {
+        ok: false,
+        code: "REMOVAL_CONFIRMATION_REQUIRED",
+        removed: plan.keys.removed,
+        message:
+          "Local-only keys would be removed. This file was not changed. Run interactively or authorize each removal with --remove-key NAME.",
+      };
+    }
 
     const id = createHash("sha256").update(target).digest("hex");
     const stage = join(dirname(target), `.env-sync-lock-${id}`);
@@ -191,6 +225,15 @@ export function* syncWorkflow(
       const verify = (): Failure | undefined => {
         const blocked = gitGuard(target, "untracked-ignored");
         if (blocked) return fail("GIT_SAFETY", blocked);
+        if (plan.keys.removed.length) {
+          const template = snapshot(example);
+          if (!template.ok) return template;
+          if (template.text !== source.text)
+            return fail(
+              "CHANGED",
+              "Example changed after removals were planned. This file was not replaced; retry with the current example.",
+            );
+        }
         const current = snapshot(target);
         if (!current.ok) return current;
         if (current.text !== local.text)
@@ -206,7 +249,7 @@ export function* syncWorkflow(
         operation =
           "create the destination without overwriting an existing file. Check for concurrent edits and hard-link support";
         linkSync(next, target);
-        return { ok: true, status: "created", keys: plan.keys };
+        return { ok: true, status: "created", ...summary };
       }
 
       let backup: string | null = null;
@@ -215,7 +258,7 @@ export function* syncWorkflow(
         if (saved.ok) backup = saved.backup;
         else {
           if (saved.code !== "BACKUP_UNAVAILABLE") return saved;
-          const approved = yield plan.keys.removed;
+          const approved = yield { kind: "backup", removed: plan.keys.removed };
           if (approved !== true) return saved;
         }
       }
@@ -227,7 +270,7 @@ export function* syncWorkflow(
       return {
         ok: true,
         status: "updated",
-        keys: plan.keys,
+        ...summary,
         backup,
       };
     } finally {

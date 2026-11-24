@@ -28,7 +28,7 @@ The CLI reads these optional keys from the **current working directory's** `.env
 
 - `ENV_SYNC_TARGET_FILES`: comma-separated local dotenv filenames, default `.env`. With no paths, the CLI syncs each in order against `.env.example` and stops on the first failure. Earlier updates remain in place. Two explicit paths always select only that pair.
 - `ENV_SYNC_JSON=true`: one value-free JSON result per target, in target order.
-- `ENV_SYNC_NO_BACKUP=true`: skips backups and confirmation on subsequent runs until changed. Defaults to `false`; Git and file safety checks remain mandatory.
+- `ENV_SYNC_NO_BACKUP=true`: skips backups and the backup prompt on subsequent runs until changed. It never approves key removals. Defaults to `false`; Git and file safety checks remain mandatory.
 - `ENV_SYNC_HELP=true`: shows usage without syncing.
 - `ENV_SYNC_BACKUP_DIR`: absolute private directory outside Git; blank uses the normal home-directory default.
 
@@ -36,18 +36,48 @@ For example, with `ENV_SYNC_TARGET_FILES=.env.local,.env.test.local` in your loc
 
 ## What changes?
 
-| Situation                                                     | Result                                                                                             |
-| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Key in both files                                             | Keep the local value token verbatim, including empty values, quotes and embedded newlines.         |
-| Key only in the example                                       | Copy its example value.                                                                            |
-| Key only in the local file                                    | Remove it from the local file; recovery requires a backup. A rename is a removal plus an addition. |
-| Order, spacing, blank lines, comments, `export`, line endings | Use the example's layout. Local comments are not retained.                                         |
-| Missing local file                                            | Create it from the example; no backup.                                                             |
-| Byte-identical result                                         | Return `unchanged`; no writes, permission changes or backup rotation.                              |
+| Situation                                                     | Result                                                                                          |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Key in both files                                             | Keep the local value token verbatim, including empty values, quotes and embedded newlines.      |
+| Key only in the example                                       | Copy its example value.                                                                         |
+| Key only in the local file                                    | Ask before removing it. Declining leaves the entire target untouched, including its other keys. |
+| Order, spacing, blank lines, comments, `export`, line endings | Use the example's layout. Local comments are not retained.                                      |
+| Missing local file                                            | Create it from the example; no backup.                                                          |
+| Byte-identical result                                         | Return `unchanged`; no writes, permission changes or backup rotation.                           |
 
-The example is never modified. Review example changes before running, especially an empty example: it intentionally removes all local keys. Only key **names**, counts, status, and (on updates) the backup path are reported. No diffs, comments, values or raw parser/subprocess diagnostics are printed. Color is limited to interactive terminals; set `NO_COLOR` to disable it.
+The example is never modified. Review example changes before running, especially an empty example: it proposes removing every local key, which requires approval. Reports show key **names**, counts, status, review reasons and (on updates) the backup path. No diffs, comments, values or raw parser/subprocess diagnostics are printed. Color is limited to interactive terminals; set `NO_COLOR` to disable it.
 
 **Supported format:** UTF-8 (optional BOM), LF or CRLF, `#` comments, optional `export`, and case-sensitive keys matching `[A-Za-z_][A-Za-z0-9_]*`. Single-, double- and backtick-quoted values can span lines; a backslash inside quotes protects the next character from closing the quote. Outside quotes, `#` starts a comment, even without a preceding space. Nothing is unescaped, expanded or executed. Duplicate keys, unsupported assignments, unclosed quotes and unquoted trailing backslashes are refused rather than guessed at. Limit: 8 MiB per input and output. This is not a shell script parser.
+
+## When an example changes
+
+Use `env-sync --since HEAD .env.example .env` to compare the working example with its last committed version. After pulling an upgrade, use the **previous** release tag or commit instead of `HEAD`. This is a normal sync with extra review notices, **not a dry run**. Without `--since`, there are no historical notices: a difference between local and example values alone isn't evidence of a change.
+
+| Change (illustrative values only)                                               | What happens                                                                                                                                                  |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Blank gains a default: `REGION=` → `REGION=us`; local is `eu`                   | Keep `eu`; report **default added**. An explicitly empty local value stays empty too.                                                                         |
+| Local still matches the old default: `TIMEOUT=30` → `60`; local is `30`         | Keep `30`; report **still matches the previous default**. Update it manually if desired.                                                                      |
+| Local already matches the new default: `PORT=3000` → `8080`; local is `8080`    | Keep it; nothing to review.                                                                                                                                   |
+| Local override, type or units change: `RETRY=3` → `auto`; local is `5`          | Keep `5`; report **check your local override**. Dotenv values are strings: no type conversion, unit inference or validation against the app.                  |
+| URL path changes: example moves from `/v1` to `/v2`; local uses a proxy URL     | Flag the changed default; never append, strip or rewrite a path in the local URL.                                                                             |
+| Default removed but key remains: `ZONE=west` → `ZONE=`                          | Keep the local value. A nonempty local value gets the previous-default or override notice; a blank one already matches. This is not key deletion.             |
+| Comment or layout only: `# seconds` → `# milliseconds`, same value              | Copy the new comment/layout; no default-change notice. Even meaningful prose changes aren't interpreted.                                                      |
+| New variable: example adds `LOG_LEVEL=info`                                     | If missing locally, copy `info` and report **added**. If a local `LOG_LEVEL=debug` predates the example key, keep it and flag the new example key for review. |
+| Key disappears, was always local-only, or is renamed: `OLD_TOKEN` → `API_TOKEN` | Prompt before losing `OLD_TOKEN`. A rename is a deletion plus a new example key, not a secret migration. Decline and move the value yourself if needed.       |
+
+Comparison ignores wrapping quotes and surrounding assignment formatting; it does not expand variables or interpret escape sequences. Successful `--json --since` results include `review` entries such as `{"key":"TIMEOUT","reason":"PREVIOUS_DEFAULT"}`, even when the file is `unchanged`. The tool stores no history of local values. If the revision or the example at that path isn't available, the requested comparison stops **before syncing**. Choose another ref or explicitly omit `--since`.
+
+### Approving removals
+
+Removal protection works **with or without `--since`**. The interactive CLI lists all affected names before writing. Only `y` approves the proposed removals for that target; Enter, Ctrl-C or EOF leaves that file and its backup untouched. This also protects against an accidentally empty example. Earlier targets in a batch are not rolled back.
+
+In JSON or redirected mode the CLI never prompts. It returns `REMOVAL_CONFIRMATION_REQUIRED` and a `removed` array of **proposed**, not completed, removals. After reviewing the names, approve just those keys for a single target:
+
+```sh
+env-sync --json --remove-key OLD_TOKEN --remove-key OLD_URL .env.example .env
+```
+
+`--remove-key` doesn't remove a key still present in the example. There is no blanket approval or persistent removal setting. Agents should ask the user before retrying with these flags. The two-argument Node API also refuses removals. Approval to remove keys does **not** waive the backup requirement, and `--no-backup` does **not** approve removals.
 
 ## Manual agent tool
 
@@ -86,7 +116,7 @@ export ENV_SYNC_BACKUP_DIR="/Volumes/WorkPrivate/env-sync-backups"
 $env:ENV_SYNC_BACKUP_DIR = 'D:\WorkPrivate\env-sync-backups'
 ```
 
-To skip the backup and confirmation for **one run**, use `env-sync --no-backup .env.example .env`. This does not create or rotate a backup, even if storage is available. Removed values may be unrecoverable. All destination safety checks still apply. With `--json --no-backup`, an update reports `"backup": null`; agents should only pass the flag when explicitly authorized.
+To skip the backup and **backup prompt** for one run, use `env-sync --no-backup .env.example .env`. This does not create or rotate a backup, even if storage is available. Removed values may be unrecoverable. All destination safety checks still apply. With `--json --no-backup`, an update reports `"backup": null`; agents should only pass the flag when explicitly authorized.
 
 If the backup cannot be saved, an interactive CLI lists the key names it would remove and recommends making a manual backup. Enter `y` to continue **once** without an automatic backup. Enter, Ctrl-C or EOF cancels without replacing the file. Git refusals cannot be overridden. If local contents change while you decide, the update is refused.
 

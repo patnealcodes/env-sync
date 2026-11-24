@@ -84,7 +84,15 @@ it("updates an ignored local file, rotates a private backup, and makes an identi
   writeFileSync(join(repo, ".gitignore"), ".env.local\n");
   const original = `A="${marker}" # local note\nOLD=private\n`;
   writeFileSync(target, original);
-  const updated = run();
+  const refused = run();
+  expect(JSON.parse(refused.stdout)).toMatchObject({
+    ok: false,
+    code: "REMOVAL_CONFIRMATION_REQUIRED",
+    removed: ["OLD"],
+  });
+  expect(readFileSync(target, "utf8")).toBe(original);
+  expect(readdirSync(home)).toEqual([]);
+  const updated = run(["--json", "--remove-key", "OLD", example, target]);
   expect(updated.status, updated.stdout).toBe(0);
   expect(updated.stderr).toBe("");
   const report = JSON.parse(updated.stdout);
@@ -107,7 +115,9 @@ it("updates an ignored local file, rotates a private backup, and makes an identi
   expect(statSync(target, { bigint: true }).mtimeNs).toBe(t);
   expect(statSync(report.backup, { bigint: true }).mtimeNs).toBe(b);
   writeFileSync(example, "A=default\n");
-  expect(run([example, target]).stdout).toContain("Status: updated");
+  expect(run(["--remove-key", "NEW", example, target]).stdout).toContain(
+    "Status: updated",
+  );
   expect(readFileSync(report.backup, "utf8")).toBe(merged);
   expect(readdirSync(dirname(report.backup))).toHaveLength(1);
 }, 60000);
@@ -146,7 +156,13 @@ it("--no-backup skips backup storage without prompting and still enforces Git sa
   expect(JSON.parse(run(args).stdout).code).toBe("GIT_SAFETY");
   expect(readFileSync(target, "utf8")).toBe(`OLD=${marker}`);
   writeFileSync(join(repo, ".gitignore"), ".env.local\n");
-  const updated = run(args);
+  expect(JSON.parse(run(args).stdout).code).toBe(
+    "REMOVAL_CONFIRMATION_REQUIRED",
+  );
+  expect(JSON.parse(run(["--remove-key", "OTHER", ...args]).stdout).code).toBe(
+    "REMOVAL_CONFIRMATION_REQUIRED",
+  );
+  const updated = run(["--remove-key", "OLD", ...args]);
   expect(updated.status).toBe(0);
   expect(updated.stderr).toBe("");
   expect(JSON.parse(updated.stdout)).toMatchObject({
@@ -180,7 +196,9 @@ it("uses a dedicated backup directory outside Git without writing to home", () =
   writeFileSync(join(home, ".env-sync-backups"), "blocked");
   const store = join(root, "approved private backups");
   writeFileSync(target, `OLD=${marker}`);
-  const out = run(undefined, { ENV_SYNC_BACKUP_DIR: store });
+  const out = run(["--json", "--remove-key", "OLD", example, target], {
+    ENV_SYNC_BACKUP_DIR: store,
+  });
   expect(out.status, out.stdout).toBe(0);
   const backup = JSON.parse(out.stdout).backup;
   expect(dirname(backup)).toBe(store);
@@ -213,7 +231,11 @@ it("refuses a custom backup location inside Git", () => {
   writeFileSync(target, `OLD=${marker}`);
   const store = join(repo, "backup-dir");
   expect(
-    JSON.parse(run(undefined, { ENV_SYNC_BACKUP_DIR: store }).stdout).code,
+    JSON.parse(
+      run(["--json", "--remove-key", "OLD", example, target], {
+        ENV_SYNC_BACKUP_DIR: store,
+      }).stdout,
+    ).code,
   ).toBe("GIT_SAFETY");
   expect(existsSync(store)).toBe(false);
   expect(readFileSync(target, "utf8")).toBe(`OLD=${marker}`);
@@ -221,13 +243,17 @@ it("refuses a custom backup location inside Git", () => {
 
 // Exercise the actual readline/TTY boundary on macOS, without accepting piped consent.
 it.skipIf(!existsSync("/usr/bin/expect")).each([
-  ["y", true],
-  ["enter", false],
-  ["interrupt", false],
-  ["edit-then-y", false],
+  ["backup", "y", true],
+  ["backup", "enter", false],
+  ["backup", "interrupt", false],
+  ["backup", "edit-then-y", false],
+  ["removal", "y", true],
+  ["removal", "enter", false],
+  ["removal", "interrupt", false],
+  ["removal", "edit-then-y", false],
 ] as const)(
-  "handles interactive backup failure: %s",
-  (answer, updated) => {
+  "handles interactive %s confirmation: %s",
+  (kind, answer, updated) => {
     writeFileSync(join(home, ".env-sync-backups"), "blocked");
     writeFileSync(target, `OLD=${marker}`);
     const term = spawnSync("/usr/bin/expect", ["-f", "-"], {
@@ -238,12 +264,14 @@ it.skipIf(!existsSync("/usr/bin/expect")).each([
         EXAMPLE: example,
         LOCAL: target,
         ANSWER: answer,
+        KIND: kind,
         NO_COLOR: "1",
       },
       encoding: "utf8",
       timeout: 15000,
       input: `set timeout 8
-spawn -noecho $env(NODE) $env(CLI) $env(EXAMPLE) $env(LOCAL)
+if {$env(KIND) eq "backup"} {set flags {--remove-key OLD}} else {set flags {--no-backup}}
+spawn -noecho $env(NODE) $env(CLI) {*}$flags $env(EXAMPLE) $env(LOCAL)
 expect {\n  -exact {[y/N]} {}\n  timeout {exit 99}\n  eof {exit 98}\n}
 switch $env(ANSWER) {
   enter {send -- "\\r"}
@@ -256,6 +284,11 @@ exit [lindex [wait] 3]\n`,
     });
     expect(term.stdout + term.stderr).not.toContain(marker);
     expect(term.stdout).toContain("Keys to remove (1): OLD");
+    expect(term.stdout).toContain(
+      kind === "removal"
+        ? "Remove these keys"
+        : "Continue without an automatic backup",
+    );
     expect(term.status).toBe(updated ? 0 : 1);
     expect(readFileSync(target, "utf8")).toBe(
       updated
@@ -312,7 +345,10 @@ it("normal CLI bootstraps .env and uses its settings on subsequent runs", () => 
   const explicit = invoke(example, join(repo, ".env.test.local"));
   expect(JSON.parse(explicit.stdout).status).toBe("unchanged");
   expect(readFileSync(target, "utf8")).toBe(`OLD=${marker}`);
-  const skipped = invoke();
+  expect(JSON.parse(invoke().stdout).code).toBe(
+    "REMOVAL_CONFIRMATION_REQUIRED",
+  );
+  const skipped = invoke("--remove-key", "OLD");
   expect(skipped.status, skipped.stderr).toBe(0);
   expect(skipped.stdout + skipped.stderr).not.toContain(marker);
   expect(JSON.parse(skipped.stdout)).toMatchObject({
@@ -322,7 +358,7 @@ it("normal CLI bootstraps .env and uses its settings on subsequent runs", () => 
   expect(existsSync(store)).toBe(false);
   configure("ENV_SYNC_NO_BACKUP=false");
   writeFileSync(target, `OLD=${marker}`);
-  const saved = invoke();
+  const saved = invoke("--remove-key", "OLD");
   expect(saved.status, saved.stderr).toBe(0);
   const backup = JSON.parse(saved.stdout).backup;
   expect(dirname(backup)).toBe(store);
@@ -332,6 +368,45 @@ it("normal CLI bootstraps .env and uses its settings on subsequent runs", () => 
   expect(invalid.status).not.toBe(0);
   expect(invalid.stderr + invalid.stdout).not.toContain(marker);
 }, 60000);
+
+it("compares a historical template without changing local overrides or revealing values", () => {
+  git("init", "-q");
+  writeFileSync(join(repo, ".gitignore"), ".env.local\n");
+  const nested = join(repo, "config files");
+  mkdirSync(nested);
+  const template = join(nested, ".env.example");
+  writeFileSync(
+    template,
+    `REGION=\nWAIT=1\nAPI=/v1\nMATCH=old\nNOTE=ok # old\n`,
+  );
+  git("add", "--", template);
+  const tree = execFileSync("git", ["-C", repo, "write-tree"], {
+    encoding: "utf8",
+    env: env(),
+  }).trim();
+  git("update-ref", "refs/tags/baseline", tree);
+  writeFileSync(
+    template,
+    `REGION=us\nWAIT=1000\nAPI=/v2\nMATCH=new\nNOTE=ok # new\n`,
+  );
+  writeFileSync(
+    target,
+    `REGION=eu\nWAIT=1\nAPI=${marker}\nMATCH=new\nNOTE=ok # new\n`,
+  );
+  const out = run(["--since", "baseline", "--json", template, target]);
+  expect(out.status, out.stdout).toBe(0);
+  expect(JSON.parse(out.stdout)).toMatchObject({
+    status: "unchanged",
+    review: [
+      { key: "REGION", reason: "DEFAULT_ADDED" },
+      { key: "WAIT", reason: "PREVIOUS_DEFAULT" },
+      { key: "API", reason: "OVERRIDE" },
+    ],
+  });
+  const missing = run(["--since", "missing-ref", "--json", template, target]);
+  expect(JSON.parse(missing.stdout).code).toBe("BASELINE_UNAVAILABLE");
+  expect(readdirSync(home)).toEqual([]);
+});
 
 it("fails closed when Git cannot run and returns JSON on usage errors", () => {
   const missing = run(undefined, { PATH: "" });
