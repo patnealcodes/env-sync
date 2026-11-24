@@ -22,14 +22,14 @@ env-sync --json .env.staging.example .env.staging.local
 
 ## What changes?
 
-| Situation                                                     | Result                                                                                                    |
-| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Key in both files                                             | Keep the local value token verbatim, including empty values, quotes and embedded newlines.                |
-| Key only in the example                                       | Copy its example value.                                                                                   |
-| Key only in the local file                                    | Remove it from the local file; it remains in the pre-sync backup. A rename is a removal plus an addition. |
-| Order, spacing, blank lines, comments, `export`, line endings | Use the example's layout. Local comments are not retained.                                                |
-| Missing local file                                            | Create it from the example; no backup.                                                                    |
-| Byte-identical result                                         | Return `unchanged`; no writes, permission changes or backup rotation.                                     |
+| Situation                                                     | Result                                                                                             |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Key in both files                                             | Keep the local value token verbatim, including empty values, quotes and embedded newlines.         |
+| Key only in the example                                       | Copy its example value.                                                                            |
+| Key only in the local file                                    | Remove it from the local file; recovery requires a backup. A rename is a removal plus an addition. |
+| Order, spacing, blank lines, comments, `export`, line endings | Use the example's layout. Local comments are not retained.                                         |
+| Missing local file                                            | Create it from the example; no backup.                                                             |
+| Byte-identical result                                         | Return `unchanged`; no writes, permission changes or backup rotation.                              |
 
 The example is never modified. Review example changes before running, especially an empty example: it intentionally removes all local keys. Only key **names**, counts, status, and (on updates) the backup path are reported. No diffs, comments, values or raw parser/subprocess diagnostics are printed. Color is limited to interactive terminals; set `NO_COLOR` to disable it.
 
@@ -53,10 +53,28 @@ Statuses: `created`, `updated` (also returns `backup`), `unchanged`. Failures ha
 
 - **Inside a worktree both conditions are mandatory:** the destination must be absent from the Git index **and** covered by an ignore rule, even when it doesn't exist yet. On refusal the terminal prints a prominent warning. Add an appropriate ignore rule yourself; the tool never edits Git configuration, untracks files or offers a force flag. Ignoring a previously committed secret does not remove it from history; rotate exposed credentials.
 - Outside Git, syncing is allowed. Git must still be available so that an unverified repository isn't mistaken for a non-repository. The backup location must be outside Git.
-- Each update saves the exact previous file in `~/.env-sync-backups/<hash-of-local-path>.bak` (`~` is your Windows profile or Unix home). One backup per destination, rotated only before replacement. Restore by copying the reported backup over the same **ignored local file**, keeping access owner-only. Don't use the backup as the template. Backups are **plaintext**, not encrypted; protect your account, disk and system backups accordingly.
-- New files use mode `0600` and private directories `0700` on macOS. On Windows the tool sets and checks a protected current-user-only access control list. If protection or backup creation fails, it won't replace the local file. Untouched files keep their existing permissions.
+- By default, each update backs up the exact previous file in `~/.env-sync-backups/<hash-of-local-path>.bak` (`~` is your Windows profile or Unix home). One backup per destination, rotated only before replacement. Restore by copying the reported backup over the same **ignored local file**, keeping access owner-only. Don't use the backup as the template. Backups are **plaintext**, not encrypted; protect your account, disk and system backups accordingly.
+- New files use mode `0600` and private directories `0700` on macOS. On Windows the tool sets and checks a protected current-user-only access control list. Destination and staging protection are mandatory even if you confirm a sync without a backup. Untouched files keep their existing permissions.
 - Writes use private staging on the destination volume. In Git, staging is checked for ignore protection before secret bytes are written. Updates flush the new bytes before a same-volume rename; creation uses a no-overwrite hard link. Input symlinks, hard-linked inputs and non-regular files are refused. These guarantees are for trusted local directories on a filesystem with native permissions and rename semantics, not network shares or hostile processes running as your user.
 - A per-destination lock blocks competing syncs and the tool rechecks the local contents before replacement. Other editors do not honor this lock: don't edit the file, index or ignore rules during a run. After interruption, confirm no sync is running, check the local file and latest backup, then remove the stale `.env-sync-lock-<hash>` directory beside the target. It may contain secret bytes; do not publish it. Incomplete `.tmp` files in the private backup directory can likewise be removed after checking no sync is running.
+
+### When home directory writes are restricted
+
+Set `ENV_SYNC_BACKUP_DIR` to the **absolute path of a dedicated private directory outside Git**. The parent must already exist; let env-sync create the backup directory and set its permissions. No home-directory fallback is attempted.
+
+```sh
+# macOS (example path; use an approved writable location)
+export ENV_SYNC_BACKUP_DIR="/Volumes/WorkPrivate/env-sync-backups"
+```
+
+```powershell
+# Windows PowerShell
+$env:ENV_SYNC_BACKUP_DIR = 'D:\WorkPrivate\env-sync-backups'
+```
+
+If the backup cannot be saved, an interactive CLI lists the key names it would remove and recommends making a manual backup. Enter `y` to continue **once** without an automatic backup. Enter, Ctrl-C or EOF cancels without replacing the file. Git refusals cannot be overridden. If local contents change while you decide, the update is refused.
+
+`--json`, redirected runs and the Node API never prompt or accept piped consent. They return `BACKUP_UNAVAILABLE` and leave the destination alone. Set a writable backup location and retry. A missing or unchanged destination still needs no backup.
 
 ## Development
 

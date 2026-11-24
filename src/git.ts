@@ -64,7 +64,7 @@ export function gitGuard(
   }
   if (probe.status !== 0 || probe.stdout.trim() !== "true") return unknown;
   if (policy === "outside")
-    return "The backup location is inside a Git repository. Use a home directory outside Git.";
+    return "The backup location is inside a Git repository. Set ENV_SYNC_BACKUP_DIR to a dedicated private directory outside Git.";
   const file = "./" + basename(path);
   const tracked = git("--literal-pathspecs", "ls-files", "-z", "--", file);
   if (tracked.status !== 0) return unknown;

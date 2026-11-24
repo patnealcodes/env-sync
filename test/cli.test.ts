@@ -21,8 +21,9 @@ const cli = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 const marker = "SENSITIVE_fixture_never_render";
 let root: string, home: string, repo: string, target: string, example: string;
 function env() {
+  const { ENV_SYNC_BACKUP_DIR: _override, ...base } = process.env;
   return {
-    ...process.env,
+    ...base,
     HOME: home,
     USERPROFILE: home,
     GIT_CONFIG_NOSYSTEM: "1",
@@ -141,9 +142,31 @@ it("refuses missing ignore rules and tracked files, even with a matching ignore 
 it("preserves the target when the backup cannot be saved", () => {
   writeFileSync(join(home, ".env-sync-backups"), "blocked");
   writeFileSync(target, `A=${marker}`);
-  expect(JSON.parse(run().stdout).ok).toBe(false);
+  expect(JSON.parse(run().stdout)).toMatchObject({
+    ok: false,
+    code: "BACKUP_UNAVAILABLE",
+  });
+  const piped = spawnSync(process.execPath, [cli, example, target], {
+    env: env(),
+    encoding: "utf8",
+    input: "y\n",
+  });
+  expect(piped.status).toBe(1);
+  expect(piped.stderr).not.toContain("[y/N]");
   expect(readFileSync(target, "utf8")).toBe(`A=${marker}`);
   expect(readdirSync(repo).sort()).toEqual([".env.example", ".env.local"]);
+}, 30000);
+
+it("uses a dedicated backup directory outside Git without writing to home", () => {
+  writeFileSync(join(home, ".env-sync-backups"), "blocked");
+  const store = join(root, "approved private backups");
+  writeFileSync(target, `OLD=${marker}`);
+  const out = run(undefined, { ENV_SYNC_BACKUP_DIR: store });
+  expect(out.status, out.stdout).toBe(0);
+  const backup = JSON.parse(out.stdout).backup;
+  expect(dirname(backup)).toBe(store);
+  expect(readFileSync(backup, "utf8")).toBe(`OLD=${marker}`);
+  expectPrivate(backup);
 }, 30000);
 
 it("refuses aliases, non-UTF8 and malformed input without disclosing raw data", () => {
@@ -164,6 +187,68 @@ it("refuses aliases, non-UTF8 and malformed input without disclosing raw data", 
   expect(JSON.parse(run().stdout).code).toBe("INVALID_ENV");
   expect(readdirSync(home)).toEqual([]);
 });
+
+it("refuses a custom backup location inside Git", () => {
+  git("init", "-q");
+  writeFileSync(join(repo, ".gitignore"), ".env.local\n");
+  writeFileSync(target, `OLD=${marker}`);
+  const store = join(repo, "backup-dir");
+  expect(
+    JSON.parse(run(undefined, { ENV_SYNC_BACKUP_DIR: store }).stdout).code,
+  ).toBe("GIT_SAFETY");
+  expect(existsSync(store)).toBe(false);
+  expect(readFileSync(target, "utf8")).toBe(`OLD=${marker}`);
+}, 30000);
+
+// Exercise the actual readline/TTY boundary on macOS, without accepting piped consent.
+it.skipIf(!existsSync("/usr/bin/expect")).each([
+  ["y", true],
+  ["enter", false],
+  ["interrupt", false],
+  ["edit-then-y", false],
+] as const)(
+  "handles interactive backup failure: %s",
+  (answer, updated) => {
+    writeFileSync(join(home, ".env-sync-backups"), "blocked");
+    writeFileSync(target, `OLD=${marker}`);
+    const term = spawnSync("/usr/bin/expect", ["-f", "-"], {
+      env: {
+        ...env(),
+        NODE: process.execPath,
+        CLI: cli,
+        EXAMPLE: example,
+        LOCAL: target,
+        ANSWER: answer,
+        NO_COLOR: "1",
+      },
+      encoding: "utf8",
+      timeout: 15000,
+      input: `set timeout 8
+spawn -noecho $env(NODE) $env(CLI) $env(EXAMPLE) $env(LOCAL)
+expect {\n  -exact {[y/N]} {}\n  timeout {exit 99}\n  eof {exit 98}\n}
+switch $env(ANSWER) {
+  enter {send -- "\\r"}
+  interrupt {send -- "\\003"}
+  edit-then-y {set f [open $env(LOCAL) w]; puts -nonewline $f "CHANGED=1"; close $f; send -- "y\\r"}
+  default {send -- "y\\r"}
+}
+expect eof
+exit [lindex [wait] 3]\n`,
+    });
+    expect(term.stdout + term.stderr).not.toContain(marker);
+    expect(term.stdout).toContain("Keys to remove (1): OLD");
+    expect(term.status).toBe(updated ? 0 : 1);
+    expect(readFileSync(target, "utf8")).toBe(
+      updated
+        ? readFileSync(example, "utf8")
+        : answer === "edit-then-y"
+          ? "CHANGED=1"
+          : `OLD=${marker}`,
+    );
+    expect(readdirSync(repo).sort()).toEqual([".env.example", ".env.local"]);
+  },
+  30000,
+);
 
 it("fails closed when Git cannot run and returns JSON on usage errors", () => {
   const missing = run(undefined, { PATH: "" });
