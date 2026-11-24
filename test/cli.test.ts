@@ -139,6 +139,25 @@ it("refuses missing ignore rules and tracked files, even with a matching ignore 
   expect(readdirSync(home)).toEqual([]);
 });
 
+it("--no-backup skips backup storage without prompting and still enforces Git safety", () => {
+  const args = ["--no-backup", "--json", example, target];
+  git("init", "-q");
+  writeFileSync(target, `OLD=${marker}`);
+  expect(JSON.parse(run(args).stdout).code).toBe("GIT_SAFETY");
+  expect(readFileSync(target, "utf8")).toBe(`OLD=${marker}`);
+  writeFileSync(join(repo, ".gitignore"), ".env.local\n");
+  const updated = run(args);
+  expect(updated.status).toBe(0);
+  expect(updated.stderr).toBe("");
+  expect(JSON.parse(updated.stdout)).toMatchObject({
+    status: "updated",
+    backup: null,
+    keys: { removed: ["OLD"] },
+  });
+  expect(readFileSync(target)).toEqual(readFileSync(example));
+  expect(readdirSync(home)).toEqual([]);
+}, 30000);
+
 it("preserves the target when the backup cannot be saved", () => {
   writeFileSync(join(home, ".env-sync-backups"), "blocked");
   writeFileSync(target, `A=${marker}`);

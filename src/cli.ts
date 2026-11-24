@@ -1,12 +1,19 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline";
-import { syncEnv, type SyncResult } from "./sync.js";
-import { syncWorkflow } from "./workflow.js";
+import { syncWorkflow, type SyncResult } from "./workflow.js";
 
-const usage = "Usage: env-sync [--json] <example-file> <local-file>";
-const args = process.argv.slice(2);
-const json = args[0] === "--json";
-if (json) args.shift();
+const usage =
+  "Usage: env-sync [--json] [--no-backup] <example-file> <local-file>";
+const args: string[] = [];
+let json = false,
+  skipBackup = false,
+  endOptions = false;
+for (const arg of process.argv.slice(2)) {
+  if (!endOptions && arg === "--") endOptions = true;
+  else if (!endOptions && arg === "--json") json = true;
+  else if (!endOptions && arg === "--no-backup") skipBackup = true;
+  else args.push(arg);
+}
 
 async function confirm(removed: readonly string[]) {
   console.error(
@@ -42,19 +49,17 @@ async function run(): Promise<SyncResult> {
   const [example, local] = args;
   if (args.length !== 2 || !example || !local)
     return { ok: false, code: "USAGE", message: usage };
-  if (
-    json ||
-    !process.stdin.isTTY ||
-    !process.stdout.isTTY ||
-    !process.stderr.isTTY
-  )
-    return syncEnv(example, local);
-  const work = syncWorkflow(example, local);
+  const interactive =
+    !json &&
+    process.stdin.isTTY &&
+    process.stdout.isTTY &&
+    process.stderr.isTTY;
+  const work = syncWorkflow(example, local, skipBackup ? "skip" : "save");
   let step = work.next();
   while (!step.done) {
     let approved = false;
     try {
-      approved = await confirm(step.value);
+      if (interactive) approved = await confirm(step.value);
     } catch {
       /* An unreadable or disconnected terminal never grants consent. */
     }
@@ -72,7 +77,7 @@ function paint(text: string, color: string, stream: NodeJS.WriteStream) {
 if (!json && args.length === 1 && args[0] === "--help") {
   console.log(
     usage +
-      "\nRebase local values onto the example. --json emits one value-free result.",
+      "\nRebase local values onto the example. --json emits one value-free result.\n--no-backup skips the backup and prompt for this run; removed values may be lost.",
   );
 } else {
   const result = await run();

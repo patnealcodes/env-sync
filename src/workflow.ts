@@ -110,6 +110,7 @@ function snapshot(path: string) {
 export function* syncWorkflow(
   exampleFile: string,
   localFile: string,
+  backupPolicy: "save" | "skip" = "save",
 ): Generator<readonly string[], SyncResult, boolean> {
   let operation =
     "resolve the input paths. Check that both parent directories exist";
@@ -206,11 +207,15 @@ export function* syncWorkflow(
         return { ok: true, status: "created", keys: plan.keys };
       }
 
-      const saved = saveBackup(id, local.text, example, target);
-      if (!saved.ok) {
-        if (saved.code !== "BACKUP_UNAVAILABLE") return saved;
-        const approved = yield plan.keys.removed;
-        if (approved !== true) return saved;
+      let backup: string | null = null;
+      if (backupPolicy !== "skip") {
+        const saved = saveBackup(id, local.text, example, target);
+        if (saved.ok) backup = saved.backup;
+        else {
+          if (saved.code !== "BACKUP_UNAVAILABLE") return saved;
+          const approved = yield plan.keys.removed;
+          if (approved !== true) return saved;
+        }
       }
       const conflict = verify();
       if (conflict) return conflict;
@@ -221,7 +226,7 @@ export function* syncWorkflow(
         ok: true,
         status: "updated",
         keys: plan.keys,
-        backup: saved.ok ? saved.backup : null,
+        backup,
       };
     } finally {
       try {

@@ -72,9 +72,11 @@ export ENV_SYNC_BACKUP_DIR="/Volumes/WorkPrivate/env-sync-backups"
 $env:ENV_SYNC_BACKUP_DIR = 'D:\WorkPrivate\env-sync-backups'
 ```
 
+To skip the backup and confirmation for **one run**, use `env-sync --no-backup .env.example .env`. This does not create or rotate a backup, even if storage is available. Removed values may be unrecoverable. All destination safety checks still apply. With `--json --no-backup`, an update reports `"backup": null`; agents should only pass the flag when explicitly authorized.
+
 If the backup cannot be saved, an interactive CLI lists the key names it would remove and recommends making a manual backup. Enter `y` to continue **once** without an automatic backup. Enter, Ctrl-C or EOF cancels without replacing the file. Git refusals cannot be overridden. If local contents change while you decide, the update is refused.
 
-`--json`, redirected runs and the Node API never prompt or accept piped consent. They return `BACKUP_UNAVAILABLE` and leave the destination alone. Set a writable backup location and retry. A missing or unchanged destination still needs no backup.
+`--json`, redirected runs and the Node API never prompt or accept piped consent. If an attempted backup fails because storage is unavailable, they return `BACKUP_UNAVAILABLE` and leave the destination alone. Set a writable backup location and retry. A missing or unchanged destination still needs no backup.
 
 ## Development
 
