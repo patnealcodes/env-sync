@@ -14,7 +14,8 @@ type Invalid = {
   readonly message: string;
 };
 
-function parse(text: string, role: "Example" | "Local file") {
+/** Parse literal value spans without evaluating, expanding or logging the input. */
+export function parse(text: string, role: "Example" | "Local file") {
   const tokens = new Map<string, Token>();
   let i = text.startsWith("\uFEFF") ? 1 : 0;
   function invalid(reason: string): Invalid {

@@ -25,10 +25,10 @@ export function saveBackup(
   contents: string,
   example: string,
   target: string,
+  backupDir: string | undefined,
 ) {
   try {
-    const configured =
-      process.env.ENV_SYNC_BACKUP_DIR ?? join(homedir(), ".env-sync-backups");
+    const configured = backupDir ?? join(homedir(), ".env-sync-backups");
     if (
       !isAbsolute(configured) ||
       dirname(resolve(configured)) === resolve(configured)
@@ -57,7 +57,7 @@ export function saveBackup(
     const unsafeBackup = gitGuard(backup, "outside");
     if (unsafeBackup) return blocked(unsafeBackup);
     // Never change ACLs on a general-purpose folder or rotate a backup over an input.
-    if (state === "existing" && process.env.ENV_SYNC_BACKUP_DIR !== undefined) {
+    if (state === "existing" && backupDir !== undefined) {
       if (
         readdirSync(store).some(
           (name) => !/^(?:[a-f0-9]{64}\.bak|[a-f0-9-]{36}\.tmp)$/.test(name),

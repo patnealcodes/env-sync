@@ -20,6 +20,20 @@ env-sync --json .env.staging.example .env.staging.local
 
 `npm link` is optional: use `node /path/to/env-example-sync/dist/cli.js ...` instead. On Windows the tool requires Windows PowerShell 5.1 (included with Windows) and a local NTFS drive; if PowerShell blocks npm's script shim, use `npm.cmd` / `env-sync.cmd`. Both input paths can be absolute or relative to the caller. The local file's parent directory must exist.
 
+## Project settings
+
+Run `env-sync` from the project directory. With no settings or paths, it syncs `.env.example` to `.env`. This works in this repo and in yours. On the first run with no local file, it creates just `.env`; settings copied from the template take effect **next run**. Review the template before accepting settings such as disabling backups.
+
+The CLI reads these optional keys from the **current working directory's** `.env` once per invocation. Explicit CLI flags and paths take precedence over exported environment variables, then local file settings, then built-in defaults. Other keys are never exported or evaluated. The example is only a template, not runtime configuration.
+
+- `ENV_SYNC_TARGET_FILES`: comma-separated local dotenv filenames, default `.env`. With no paths, the CLI syncs each in order against `.env.example` and stops on the first failure. Earlier updates remain in place. Two explicit paths always select only that pair.
+- `ENV_SYNC_JSON=true`: one value-free JSON result per target, in target order.
+- `ENV_SYNC_NO_BACKUP=true`: skips backups and confirmation on subsequent runs until changed. Defaults to `false`; Git and file safety checks remain mandatory.
+- `ENV_SYNC_HELP=true`: shows usage without syncing.
+- `ENV_SYNC_BACKUP_DIR`: absolute private directory outside Git; blank uses the normal home-directory default.
+
+For example, with `ENV_SYNC_TARGET_FILES=.env.local,.env.test.local` in your local `.env`, run `env-sync` for both, or `env-sync .env.example .env.local` for just one. If `.env` itself is a target, include any settings you want preserved in its template, just like other keys.
+
 ## What changes?
 
 | Situation                                                     | Result                                                                                             |
@@ -47,7 +61,7 @@ Call the CLI with an argument array (not an interpolated shell command), e.g. `[
 }
 ```
 
-Statuses: `created`, `updated` (also returns `backup`), `unchanged`. Failures have `ok: false`, a stable `code` such as `GIT_SAFETY`, and a value-free `message`. Exit codes: `0` success, `1` refusal/I/O failure, `2` usage error. A Node tool wrapper can instead import `syncEnv(examplePath, localPath)` from `env-example-sync` when installed locally; it returns the same object synchronously. Register that wrapper only if desired.
+Statuses: `created`, `updated` (also returns `backup`), `unchanged`. Failures have `ok: false`, a stable `code` such as `GIT_SAFETY`, and a value-free `message`. Exit codes: `0` success, `1` refusal/I/O failure, `2` usage error. A Node tool wrapper can instead import `syncEnv(examplePath, localPath)` from `env-example-sync` when installed locally; it returns the same object synchronously. The Node API takes an explicit pair and does not load CLI preferences from the working directory.
 
 ## Git protection, backups and recovery
 

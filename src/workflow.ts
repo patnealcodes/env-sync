@@ -67,7 +67,8 @@ function unsafeName(path: string) {
   );
 }
 
-function snapshot(path: string) {
+/** Read an optional regular, unlinked UTF-8 input using the sync safety checks. */
+export function snapshot(path: string) {
   const info = lstatSync(path, { bigint: true, throwIfNoEntry: false });
   if (!info) return { ok: true, text: undefined } as const;
   if (!info.isFile() || info.nlink !== 1n)
@@ -111,6 +112,7 @@ export function* syncWorkflow(
   exampleFile: string,
   localFile: string,
   backupPolicy: "save" | "skip" = "save",
+  backupDir = process.env.ENV_SYNC_BACKUP_DIR || undefined,
 ): Generator<readonly string[], SyncResult, boolean> {
   let operation =
     "resolve the input paths. Check that both parent directories exist";
@@ -209,7 +211,7 @@ export function* syncWorkflow(
 
       let backup: string | null = null;
       if (backupPolicy !== "skip") {
-        const saved = saveBackup(id, local.text, example, target);
+        const saved = saveBackup(id, local.text, example, target, backupDir);
         if (saved.ok) backup = saved.backup;
         else {
           if (saved.code !== "BACKUP_UNAVAILABLE") return saved;

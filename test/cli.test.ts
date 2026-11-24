@@ -107,7 +107,7 @@ it("updates an ignored local file, rotates a private backup, and makes an identi
   expect(statSync(target, { bigint: true }).mtimeNs).toBe(t);
   expect(statSync(report.backup, { bigint: true }).mtimeNs).toBe(b);
   writeFileSync(example, "A=default\n");
-  expect(run([example, target]).stdout).toContain("env-sync: updated");
+  expect(run([example, target]).stdout).toContain("Status: updated");
   expect(readFileSync(report.backup, "utf8")).toBe(merged);
   expect(readdirSync(dirname(report.backup))).toHaveLength(1);
 }, 60000);
@@ -268,6 +268,70 @@ exit [lindex [wait] 3]\n`,
   },
   30000,
 );
+
+it("normal CLI bootstraps .env and uses its settings on subsequent runs", () => {
+  const fixture = new URL("../.env.example", import.meta.url);
+  writeFileSync(example, readFileSync(fixture));
+  const settings = join(repo, ".env");
+  const invoke = (...args: string[]) =>
+    spawnSync(process.execPath, [cli, ...args], {
+      cwd: repo,
+      env: env(),
+      encoding: "utf8",
+    });
+  git("init", "-q");
+  writeFileSync(
+    join(repo, ".gitignore"),
+    ".env\n.env.local\n.env.test.local\n",
+  );
+  const initial = invoke();
+  expect(initial.status, initial.stderr).toBe(0);
+  expect(existsSync(target)).toBe(false);
+  expect(readFileSync(settings)).toEqual(readFileSync(example));
+  const batch = invoke();
+  expect(batch.status).toBe(0);
+  expect(batch.stdout).toContain("env-sync · 3 files\n\n[1/3] .env\n");
+  expect(batch.stdout).toContain("\n\n[2/3] .env.local\n");
+  expect(batch.stdout).toContain("\n\n[3/3] .env.test.local\n");
+  expect(batch.stdout).toContain("+ Added (5)");
+  expect(batch.stdout).toContain("= Preserved (5)");
+  expect(batch.stdout).not.toContain("\x1b");
+  for (const name of [".env", ".env.local", ".env.test.local"])
+    expect(readFileSync(join(repo, name))).toEqual(readFileSync(example));
+  const store = join(root, "private backups");
+  const configure = (extra: string) =>
+    writeFileSync(
+      settings,
+      `ENV_SYNC_JSON=true\nENV_SYNC_TARGET_FILES=.env.local\nENV_SYNC_BACKUP_DIR="${store}"\nNODE_OPTIONS=${marker}\n${extra}`,
+    );
+  configure("ENV_SYNC_HELP=true");
+  writeFileSync(target, `OLD=${marker}`);
+  expect(invoke().stdout).toContain("Usage: env-sync");
+  expect(readFileSync(target, "utf8")).toBe(`OLD=${marker}`);
+  configure("ENV_SYNC_NO_BACKUP=true");
+  const explicit = invoke(example, join(repo, ".env.test.local"));
+  expect(JSON.parse(explicit.stdout).status).toBe("unchanged");
+  expect(readFileSync(target, "utf8")).toBe(`OLD=${marker}`);
+  const skipped = invoke();
+  expect(skipped.status, skipped.stderr).toBe(0);
+  expect(skipped.stdout + skipped.stderr).not.toContain(marker);
+  expect(JSON.parse(skipped.stdout)).toMatchObject({
+    status: "updated",
+    backup: null,
+  });
+  expect(existsSync(store)).toBe(false);
+  configure("ENV_SYNC_NO_BACKUP=false");
+  writeFileSync(target, `OLD=${marker}`);
+  const saved = invoke();
+  expect(saved.status, saved.stderr).toBe(0);
+  const backup = JSON.parse(saved.stdout).backup;
+  expect(dirname(backup)).toBe(store);
+  expect(readFileSync(backup, "utf8")).toBe(`OLD=${marker}`);
+  configure(`ENV_SYNC_NO_BACKUP=${marker}`);
+  const invalid = invoke();
+  expect(invalid.status).not.toBe(0);
+  expect(invalid.stderr + invalid.stdout).not.toContain(marker);
+}, 60000);
 
 it("fails closed when Git cannot run and returns JSON on usage errors", () => {
   const missing = run(undefined, { PATH: "" });
