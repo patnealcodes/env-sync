@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
@@ -22,7 +23,9 @@ const cli = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 const marker = "SENSITIVE_fixture_never_render";
 let root: string, home: string, repo: string, target: string, example: string;
 function env() {
-  const { ENV_SYNC_BACKUP_DIR: _override, ...base } = process.env;
+  const base = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !/^(?:GIT_|ENV_SYNC_)/i.test(key)),
+  );
   return {
     ...base,
     HOME: home,
@@ -175,6 +178,23 @@ it("--no-backup skips backup storage without prompting and still enforces Git sa
   expect(readdirSync(home)).toEqual([]);
 }, 30000);
 
+it("returns BUSY without touching the target or another sync's lock", () => {
+  const original = `A=${marker}\n`;
+  writeFileSync(target, original);
+  const id = createHash("sha256").update(realpathSync.native(target)).digest("hex");
+  const lock = join(repo, `.env-sync-lock-${id}`);
+  mkdirSync(lock);
+  const staged = join(lock, "next");
+  writeFileSync(staged, "in progress");
+
+  const refused = run();
+  expect(refused.status).toBe(1);
+  expect(JSON.parse(refused.stdout)).toMatchObject({ ok: false, code: "BUSY" });
+  expect(readFileSync(target, "utf8")).toBe(original);
+  expect(readFileSync(staged, "utf8")).toBe("in progress");
+  expect(readdirSync(home)).toEqual([]);
+});
+
 it("preserves the target when the backup cannot be saved", () => {
   writeFileSync(join(home, ".env-sync-backups"), "blocked");
   writeFileSync(target, `A=${marker}`);
@@ -183,6 +203,7 @@ it("preserves the target when the backup cannot be saved", () => {
     code: "BACKUP_UNAVAILABLE",
   });
   const piped = spawnSync(process.execPath, [cli, example, target], {
+    cwd: home,
     env: env(),
     encoding: "utf8",
     input: "y\n",
@@ -275,6 +296,7 @@ it.skipIf(!existsSync("/usr/bin/expect")).each([
     writeFileSync(join(home, ".env-sync-backups"), "blocked");
     writeFileSync(target, `OLD=${marker}`);
     const term = spawnSync("/usr/bin/expect", ["-f", "-"], {
+      cwd: home,
       env: {
         ...env(),
         NODE: process.execPath,
