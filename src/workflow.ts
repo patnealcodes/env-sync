@@ -7,7 +7,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync,
+  readSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -79,6 +79,8 @@ function unsafeName(path: string) {
   );
 }
 
+const maxEnvBytes = 8 * 1024 * 1024;
+
 /** Read an optional regular, unlinked UTF-8 input using the sync safety checks. */
 export function snapshot(path: string) {
   const info = lstatSync(path, { bigint: true, throwIfNoEntry: false });
@@ -88,7 +90,7 @@ export function snapshot(path: string) {
       "UNSAFE_PATH",
       "Use regular, non-linked files. Directories, symlinks and hard links are refused.",
     );
-  if (info.size > 8n * 1024n * 1024n)
+  if (info.size > maxEnvBytes)
     return fail("INVALID_ENV", "Input exceeds the 8 MiB limit.");
   const fd = openSync(
     path,
@@ -100,12 +102,26 @@ export function snapshot(path: string) {
     const opened = fstatSync(fd, { bigint: true });
     if (!opened.isFile() || opened.dev !== info.dev || opened.ino !== info.ino)
       return fail("CHANGED", "Input changed while opening. Retry the sync.");
-    const bytes = readFileSync(fd);
+    // Size is a hint: the file can grow after stat. Reserve one byte to detect overflow.
+    let bytes = Buffer.allocUnsafe(Number(info.size) + 1);
+    let length = 0;
+    for (;;) {
+      const count = readSync(fd, bytes, length, bytes.length - length, null);
+      if (count === 0) break;
+      length += count;
+      if (length > maxEnvBytes)
+        return fail("INVALID_ENV", "Input exceeds the 8 MiB limit.");
+      if (length === bytes.length) {
+        const next = Buffer.allocUnsafe(Math.min(length * 2, maxEnvBytes + 1));
+        bytes.copy(next);
+        bytes = next;
+      }
+    }
     try {
       return {
         ok: true,
         text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
-          bytes,
+          bytes.subarray(0, length),
         ),
       } as const;
     } catch {
@@ -174,7 +190,7 @@ export function* syncWorkflow(
     }
     const plan = merge(source.text, local.text ?? "", baseline);
     if (!plan.ok) return plan;
-    if (Buffer.byteLength(plan.text) > 8 * 1024 * 1024)
+    if (Buffer.byteLength(plan.text) > maxEnvBytes)
       return fail("INVALID_ENV", "Merged output exceeds the 8 MiB limit.");
     const summary = {
       keys: plan.keys,

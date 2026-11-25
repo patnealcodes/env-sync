@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  appendFileSync,
   existsSync,
   linkSync,
   mkdirSync,
@@ -204,6 +205,23 @@ it("uses a dedicated backup directory outside Git without writing to home", () =
   expect(dirname(backup)).toBe(store);
   expect(readFileSync(backup, "utf8")).toBe(`OLD=${marker}`);
   expectPrivate(backup);
+}, 30000);
+
+it("accepts an 8 MiB input and refuses one byte more without replacing the target", () => {
+  const limit = 8 * 1024 * 1024;
+  const contents = Buffer.from("#" + "é".repeat((limit - 2) / 2) + "\n");
+  writeFileSync(example, contents);
+  const created = run();
+  expect(created.status).toBe(0);
+  expect(JSON.parse(created.stdout).status).toBe("created");
+  expect(readFileSync(target).equals(contents)).toBe(true);
+
+  appendFileSync(example, "\n");
+  const refused = run();
+  expect(refused.status).toBe(1);
+  expect(JSON.parse(refused.stdout)).toMatchObject({ ok: false, code: "INVALID_ENV" });
+  expect(readFileSync(target).equals(contents)).toBe(true);
+  expect(readdirSync(home)).toEqual([]);
 }, 30000);
 
 it("refuses aliases, non-UTF8 and malformed input without disclosing raw data", () => {
