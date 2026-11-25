@@ -19,6 +19,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "bench:scaffold": "npm run build && node scripts/scaffold-bench.mjs run",
     "prepare": "npm run build && husky",
     "test": "npm run build && vitest run"
   },

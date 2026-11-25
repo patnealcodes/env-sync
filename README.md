@@ -149,3 +149,17 @@ If the backup cannot be saved, an interactive CLI lists the key names it would r
 ## Development
 
 `npm test` builds the CLI and runs parser and end-to-end tests against disposable files and real Git repositories. CI is configured for macOS and Windows, including permission checks on both.
+
+### Optional batch benchmark
+
+On macOS or Linux with Node and Git, run:
+
+```sh
+npm run bench:scaffold -- --rounds 1
+```
+
+This builds **this checkout's Node CLI** and times recursive scan, batch creation and batch update separately in a fresh temporary Git worktree. Omit `--rounds 1` for three rounds and their medians. Each round uses 13 directories, 1,248 noise files and 26 templates with 4,096 variables each. The manifest maps them to 39 ignored local targets.
+
+Before the update the runner edits each target's values and revises its template's defaults and keys. It approves only the expected key removals for each target, never a missing backup. It verifies the file inventory, every merged target and every pre-update backup byte-for-byte before reporting the round, then removes the workspace. Setup, edits and verification are outside the timers. There are no CI timing thresholds. The update uses the system `script` utility (`/usr/bin/script`, supplied by macOS or util-linux) for a real interactive terminal. No Python or additional npm packages are needed.
+
+For manual inspection, `node scripts/scaffold-bench.mjs build` prints a disposable workspace path. Pass that path to `initial`, `mutate`, `update` and finally `teardown` (which deletes the workspace and its backups). Run the benchmark's fixture checks with `npm run build && node --test scripts/scaffold-checks.mjs`.
