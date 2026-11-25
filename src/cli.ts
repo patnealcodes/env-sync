@@ -130,7 +130,31 @@ function paint(
     : text;
 }
 
+let logoShown = false;
+function showLogo() {
+  if (logoShown || json || !process.stdout.isTTY) return;
+  logoShown = true;
+  const cyan = "38;2;101;209;196";
+  const gold = "38;2;244;201;93";
+  const coral = "38;2;242;139;130";
+  console.log(
+    [
+      paint("    ██████████", cyan),
+      paint("    ████", cyan),
+      paint("██", gold) +
+        paint("  ████", cyan) +
+        paint("██", gold) +
+        paint("████", coral) +
+        "   " +
+        paint("env-sync", "1"),
+      paint("          ████", coral),
+      paint("    ██████████", coral),
+    ].join("\n"),
+  );
+}
+
 function report(result: SyncResult) {
+  showLogo();
   if (json) console.log(JSON.stringify(result));
   else if (!result.ok) {
     const title =
@@ -191,6 +215,7 @@ function report(result: SyncResult) {
 }
 
 function showHelp() {
+  showLogo();
   console.log(
     json
       ? JSON.stringify({ ok: true, status: "help", message: helpText })
@@ -217,10 +242,12 @@ async function main() {
     const result = scanManifest();
     if (!result.ok) return report(result);
     if (json) console.log(JSON.stringify(result));
-    else
+    else {
+      showLogo();
       console.log(
         `.envsync.json: ${result.status} (${result.added} new sources). No dotenv files synced.`,
       );
+    }
     return 0;
   }
   const config = loadSettings();
@@ -260,10 +287,9 @@ async function main() {
       baselines.set(pair.example, baseline.tokens);
     }
   }
-  if (!json)
-    console.log(
-      `${paint("env-sync", "1;36")} · ${targets.length} ${targets.length === 1 ? "file" : "files"}`,
-    );
+  if (!json) {
+    showLogo();
+  }
   for (const [index, { example: template, target }] of targets.entries()) {
     if (!json) {
       // Explicit paths may contain terminal controls. Never render them verbatim.

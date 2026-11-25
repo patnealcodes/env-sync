@@ -1,3 +1,5 @@
+<img src="assets/env-sync-logo.svg" alt="env-sync" width="384">
+
 # env-sync
 
 Bring a local dotenv file up to date with its example **without replacing matching local values**. There is no daemon, hook, MCP server, network service or background scanning. Run it when you want to sync.
@@ -65,7 +67,7 @@ JSON gives editors a known syntax and lets the CLI reject misspelled fields, uns
 | Missing local file                                            | Create it from the example; no backup.                                                          |
 | Byte-identical result                                         | Return `unchanged`; no writes, permission changes or backup rotation.                           |
 
-The example is never modified. Review example changes before running, especially an empty example: it proposes removing every local key, which requires approval. Reports show key **names**, counts, status, review reasons and (on updates) the backup path. No diffs, comments, values or raw parser/subprocess diagnostics are printed. Color is limited to interactive terminals; set `NO_COLOR` to disable it.
+The example is never modified. Review example changes before running, especially an empty example: it proposes removing every local key, which requires approval. Reports show key **names**, counts, status, review reasons and (on updates) the backup path. No diffs, comments, values or raw parser/subprocess diagnostics are printed. The logo and color are limited to interactive human-readable terminals; `--json` and redirected output remain unadorned. Set `NO_COLOR` to disable color without hiding the logo.
 
 **Supported format:** UTF-8 (optional BOM), LF or CRLF, `#` comments, optional `export`, and case-sensitive keys matching `[A-Za-z_][A-Za-z0-9_]*`. Single-, double- and backtick-quoted values can span lines; a backslash inside quotes protects the next character from closing the quote. Outside quotes, `#` starts a comment, even without a preceding space. Nothing is unescaped, expanded or executed. Duplicate keys, unsupported assignments, unclosed quotes and unquoted trailing backslashes are refused rather than guessed at. Limit: 8 MiB per input and output. This is not a shell script parser.
 

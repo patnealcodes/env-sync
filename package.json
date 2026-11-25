@@ -10,6 +10,7 @@
   "exports": "./dist/sync.js",
   "types": "./dist/sync.d.ts",
   "files": [
+    "assets",
     "dist",
     "README.md"
   ],

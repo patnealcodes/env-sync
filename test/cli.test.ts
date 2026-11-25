@@ -283,6 +283,7 @@ expect eof
 exit [lindex [wait] 3]\n`,
     });
     expect(term.stdout + term.stderr).not.toContain(marker);
+    expect(term.stdout).toContain("██  ██████████   env-sync");
     expect(term.stdout).toContain("Keys to remove (1): OLD");
     expect(term.stdout).toContain(
       kind === "removal"
