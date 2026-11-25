@@ -302,6 +302,40 @@ exit [lindex [wait] 3]\n`,
   30000,
 );
 
+it("scans filenames only and appends new sources without changing existing mappings or dotenv files", () => {
+  const file = join(home, ".envsync.json");
+  mkdirSync(join(home, "client"));
+  mkdirSync(join(home, "node_modules"));
+  for (const name of [
+    ".env.example",
+    "client/env.sample",
+    "client/.env.production",
+    "node_modules/.env.example",
+  ])
+    writeFileSync(join(home, name), marker);
+  const scan = () => run(["--json", "--scan"]);
+  const first = scan();
+  expect(first.status, first.stdout).toBe(0);
+  const entries = [
+    { source: ".env.example", targets: [".env"] },
+    { source: "client/env.sample", targets: ["client/.env"] },
+  ];
+  expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ mappings: entries });
+  expect(existsSync(join(home, ".env"))).toBe(false);
+  expect(existsSync(join(home, "client", ".env"))).toBe(false);
+  entries[0].targets = [".env.custom"];
+  const custom = JSON.stringify({ mappings: entries });
+  writeFileSync(file, custom);
+  expect(scan().status).toBe(0);
+  expect(readFileSync(file, "utf8")).toBe(custom);
+  writeFileSync(join(home, "client", ".env.local.example"), marker);
+  expect(scan().status).toBe(0);
+  expect(JSON.parse(readFileSync(file, "utf8")).mappings).toEqual([
+    ...entries,
+    { source: "client/.env.local.example", targets: ["client/.env.local"] },
+  ]);
+});
+
 it("normal CLI bootstraps .env and uses its settings on subsequent runs", () => {
   const fixture = new URL("../.env.example", import.meta.url);
   writeFileSync(example, readFileSync(fixture));
@@ -321,21 +355,29 @@ it("normal CLI bootstraps .env and uses its settings on subsequent runs", () => 
   expect(initial.status, initial.stderr).toBe(0);
   expect(existsSync(target)).toBe(false);
   expect(readFileSync(settings)).toEqual(readFileSync(example));
+  const setTargets = (targets: string[]) =>
+    writeFileSync(
+      join(repo, ".envsync.json"),
+      JSON.stringify({ mappings: [{ source: ".env.example", targets }] }),
+    );
+  setTargets([".env", ".env.local", ".env.test.local"]);
   const batch = invoke();
   expect(batch.status).toBe(0);
   expect(batch.stdout).toContain("env-sync · 3 files\n\n[1/3] .env\n");
   expect(batch.stdout).toContain("\n\n[2/3] .env.local\n");
   expect(batch.stdout).toContain("\n\n[3/3] .env.test.local\n");
-  expect(batch.stdout).toContain("+ Added (5)");
-  expect(batch.stdout).toContain("= Preserved (5)");
+  expect(batch.stdout).toContain("+ Added (4)");
+  expect(batch.stdout).toContain("= Preserved (4)");
   expect(batch.stdout).not.toContain("\x1b");
-  for (const name of [".env", ".env.local", ".env.test.local"])
+  expect(readFileSync(settings)).toEqual(readFileSync(example));
+  setTargets([".env.local"]);
+  for (const name of [".env.local", ".env.test.local"])
     expect(readFileSync(join(repo, name))).toEqual(readFileSync(example));
   const store = join(root, "private backups");
   const configure = (extra: string) =>
     writeFileSync(
       settings,
-      `ENV_SYNC_JSON=true\nENV_SYNC_TARGET_FILES=.env.local\nENV_SYNC_BACKUP_DIR="${store}"\nNODE_OPTIONS=${marker}\n${extra}`,
+      `ENV_SYNC_JSON=true\nENV_SYNC_BACKUP_DIR="${store}"\nNODE_OPTIONS=${marker}\n${extra}`,
     );
   configure("ENV_SYNC_HELP=true");
   writeFileSync(target, `OLD=${marker}`);
@@ -368,6 +410,151 @@ it("normal CLI bootstraps .env and uses its settings on subsequent runs", () => 
   expect(invalid.status).not.toBe(0);
   expect(invalid.stderr + invalid.stdout).not.toContain(marker);
 }, 60000);
+
+it("syncs only named monorepo outputs, using each sibling template and baseline", () => {
+  const client = join(repo, "apps", "client");
+  mkdirSync(client, { recursive: true });
+  git("init", "-q");
+  writeFileSync(join(repo, ".gitignore"), ".env\n.env.local\n");
+  writeFileSync(example, "ROOT=old\n");
+  writeFileSync(join(client, ".env.example"), "WEB=old\n");
+  git("add", "--", ".env.example", "apps/client/.env.example");
+  const tree = execFileSync("git", ["-C", repo, "write-tree"], {
+    encoding: "utf8",
+    env: env(),
+  }).trim();
+  git("update-ref", "refs/tags/base", tree);
+  writeFileSync(example, "ROOT=new\n");
+  writeFileSync(join(client, ".env.example"), "WEB=new\n");
+  writeFileSync(join(client, ".env"), "WEB=old\n");
+  writeFileSync(
+    join(repo, ".envsync.json"),
+    JSON.stringify({
+      mappings: [
+        { source: ".env.example", targets: [".env.local"] },
+        { source: "apps/client/.env.example", targets: ["apps/client/.env"] },
+      ],
+    }),
+  );
+  const out = spawnSync(process.execPath, [cli, "--json", "--since", "base"], {
+    cwd: repo,
+    env: env(),
+    encoding: "utf8",
+  });
+  expect(out.status, out.stdout).toBe(0);
+  const reports = out.stdout
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(reports).toMatchObject([
+    { status: "created", keys: { added: ["ROOT"] } },
+    {
+      status: "unchanged",
+      review: [{ key: "WEB", reason: "PREVIOUS_DEFAULT" }],
+    },
+  ]);
+  expect(readFileSync(target, "utf8")).toBe("ROOT=new\n");
+  expect(existsSync(join(client, ".env.local"))).toBe(false);
+}, 30000);
+
+it("creates only the designated outputs for each named example", () => {
+  const client = join(home, "apps", "client");
+  mkdirSync(client, { recursive: true });
+  writeFileSync(join(home, ".env.example"), "ROOT=one\n");
+  writeFileSync(join(client, "env.example"), "WEB=two\n");
+  writeFileSync(join(client, ".env.example"), "WRONG=unused\n");
+  writeFileSync(
+    join(home, ".envsync.json"),
+    JSON.stringify({
+      mappings: [
+        { source: ".env.example", targets: [".env", ".env.test.local"] },
+        {
+          source: "apps/client/env.example",
+          targets: ["apps/client/.env.local"],
+        },
+      ],
+    }),
+  );
+  const out = run(["--json"]);
+  expect(out.status, out.stdout).toBe(0);
+  for (const name of [".env", ".env.test.local"])
+    expect(readFileSync(join(home, name), "utf8")).toBe("ROOT=one\n");
+  expect(readFileSync(join(client, ".env.local"), "utf8")).toBe("WEB=two\n");
+  expect(existsSync(join(client, ".env.test.local"))).toBe(false);
+  expect(existsSync(join(home, ".env.local"))).toBe(false);
+}, 30000);
+
+it.each([
+  "../.env",
+  "/apps/client/.env",
+  "C:/apps/.env",
+  ".env.example",
+  "./.env.local",
+  ".env.sample",
+])("rejects unsafe manifest target: %s", (path) => {
+  writeFileSync(
+    join(home, ".envsync.json"),
+    JSON.stringify({ mappings: [{ source: ".env.example", targets: [path] }] }),
+  );
+  expect(JSON.parse(run(["--json"]).stdout).code).toBe("INVALID_MANIFEST");
+  expect(readdirSync(home)).toEqual([".envsync.json"]);
+});
+
+it("does not overwrite malformed manifests or guess between conflicting templates", () => {
+  writeFileSync(join(home, ".env.example"), marker);
+  writeFileSync(join(home, "env.sample"), marker);
+  for (const args of [["--json"], ["--scan", "--json"]]) {
+    const out = run(args);
+    expect(JSON.parse(out.stdout).code).toBe("INVALID_MANIFEST");
+    expect(existsSync(join(home, ".envsync.json"))).toBe(false);
+    expect(existsSync(join(home, ".env"))).toBe(false);
+  }
+  for (const bad of [
+    "{" + marker,
+    JSON.stringify({ mappings: [{ source: ".env.example", target: ".env" }] }),
+  ]) {
+    writeFileSync(join(home, ".envsync.json"), bad);
+    expect(JSON.parse(run(["--json", "--scan"]).stdout).code).toBe(
+      "INVALID_MANIFEST",
+    );
+    expect(readFileSync(join(home, ".envsync.json"), "utf8")).toBe(bad);
+  }
+});
+
+it("without a manifest syncs only current-directory templates and creates no manifest", () => {
+  writeFileSync(join(home, "env.sample"), "ROOT=yes");
+  mkdirSync(join(home, "app"));
+  writeFileSync(join(home, "app", ".env.example"), "APP=yes");
+  expect(run(["--json"], { ENV_SYNC_TARGET_FILES: "app/.env" }).status).toBe(0);
+  expect(readFileSync(join(home, ".env"), "utf8")).toBe("ROOT=yes");
+  expect(existsSync(join(home, "app", ".env"))).toBe(false);
+  expect(existsSync(join(home, ".envsync.json"))).toBe(false);
+});
+
+it("does not follow a linked target directory or fall back to the root template", () => {
+  writeFileSync(join(home, ".env.example"), "ROOT=1");
+  mkdirSync(join(home, "client"));
+  const mapping = (dir: string) =>
+    writeFileSync(
+      join(home, ".envsync.json"),
+      JSON.stringify({
+        mappings: [{ source: dir + "/.env.example", targets: [dir + "/.env"] }],
+      }),
+    );
+  mapping("client");
+  const missing = run(["--json"]);
+  expect(JSON.parse(missing.stdout).code).toBe("IO");
+  expect(existsSync(join(home, "client", ".env"))).toBe(false);
+  symlinkSync(
+    repo,
+    join(home, "linked"),
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  mapping("linked");
+  const linked = run(["--json"]);
+  expect(JSON.parse(linked.stdout).code).toBe("UNSAFE_PATH");
+  expect(existsSync(join(repo, ".env"))).toBe(false);
+});
 
 it("compares a historical template without changing local overrides or revealing values", () => {
   git("init", "-q");

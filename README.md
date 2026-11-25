@@ -1,6 +1,6 @@
 # env-sync
 
-Bring a local dotenv file up to date with its example **without replacing matching local values**. There is no daemon, hook, MCP server, network service or automatic discovery. Run it when you want to sync.
+Bring a local dotenv file up to date with its example **without replacing matching local values**. There is no daemon, hook, MCP server, network service or background scanning. Run it when you want to sync.
 
 ## Install and run
 
@@ -22,17 +22,37 @@ env-sync --json .env.staging.example .env.staging.local
 
 ## Project settings
 
-Run `env-sync` from the project directory. With no settings or paths, it syncs `.env.example` to `.env`. This works in this repo and in yours. On the first run with no local file, it creates just `.env`; settings copied from the template take effect **next run**. Review the template before accepting settings such as disabling backups.
+Run `env-sync` from the project directory. With no paths, it uses `.envsync.json` if present; otherwise it infers targets from templates in the current directory only. This works in this repo and in yours. For example, `.env.example` creates `.env` if missing; settings copied from the template take effect **next run**. Review the template before accepting settings such as disabling backups.
 
 The CLI reads these optional keys from the **current working directory's** `.env` once per invocation. Explicit CLI flags and paths take precedence over exported environment variables, then local file settings, then built-in defaults. Other keys are never exported or evaluated. The example is only a template, not runtime configuration.
 
-- `ENV_SYNC_TARGET_FILES`: comma-separated local dotenv filenames, default `.env`. With no paths, the CLI syncs each in order against `.env.example` and stops on the first failure. Earlier updates remain in place. Two explicit paths always select only that pair.
 - `ENV_SYNC_JSON=true`: one value-free JSON result per target, in target order.
 - `ENV_SYNC_NO_BACKUP=true`: skips backups and the backup prompt on subsequent runs until changed. It never approves key removals. Defaults to `false`; Git and file safety checks remain mandatory.
 - `ENV_SYNC_HELP=true`: shows usage without syncing.
 - `ENV_SYNC_BACKUP_DIR`: absolute private directory outside Git; blank uses the normal home-directory default.
 
-For example, with `ENV_SYNC_TARGET_FILES=.env.local,.env.test.local` in your local `.env`, run `env-sync` for both, or `env-sync .env.example .env.local` for just one. If `.env` itself is a target, include any settings you want preserved in its template, just like other keys.
+### Project mappings: `.envsync.json`
+
+Run `env-sync --scan` from the project root to create or update `.envsync.json`. This command only inspects filenames and edits the manifest; it never reads dotenv values or syncs destinations. Review the file, then run `env-sync` to apply its mappings. `env-sync <example> <target>` still selects exactly one pair without reading the manifest.
+
+The manifest is strict JSON. All paths (including targets) are relative to its directory and use forward slashes:
+
+```json
+{
+  "mappings": [
+    { "source": ".env.example", "targets": [".env", ".env.test.local"] },
+    { "source": "apps/client/env.sample", "targets": ["apps/client/.env"] }
+  ]
+}
+```
+
+JSON gives editors a known syntax and lets the CLI reject misspelled fields, unsafe paths and overlapping targets. The cost is more punctuation and no comments or trailing commas. The manifest contains paths only and can be committed. `ENV_SYNC_TARGET_FILES` is no longer read.
+
+- Scan recognizes `.env.example`, `.env.sample`, `env.example` and their variants. Both `.env.sample` and `env.example` suggest a sibling `.env`; `.env.local.example` suggests `.env.local`. Ordinary local files such as `.env.production` never become sources based on an ignore rule.
+- Recursive discovery skips symlinks, hidden directories, nested Git repos and dependency/build directories (`node_modules`, `vendor`, `dist`, `build`, `coverage`). Templates may be tracked or ignored. Git checks still apply to every destination **when syncing**.
+- Rescan appends only new sources. Existing target lists and their order are preserved, even if a source disappeared. Use an empty `targets` array to explicitly skip a known source. No changes means no rewrite.
+- If two examples suggest the same destination, nothing is written. Edit or create the manifest to assign different targets or skip one source, then scan again.
+- Without a manifest, `env-sync` looks only in the working directory and does **not** create a manifest. An existing manifest is authoritative, including an empty one. Sync stops at the first target failure; earlier updates remain. `--scan --json` returns a single scan result and does not load CLI preferences from `.env`.
 
 ## What changes?
 

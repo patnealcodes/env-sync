@@ -34,18 +34,6 @@ export function loadSettings() {
       if (v !== "true" && v !== "false")
         return invalid(`Set ${key} to true or false before syncing.`);
     }
-    const targets = (value("ENV_SYNC_TARGET_FILES") ?? ".env")
-      .split(",")
-      .map((s) => s.trim());
-    if (
-      targets.some(
-        (t) => !/^\.env(?:\.[a-z0-9_-]+)*$/i.test(t) || /\.example$/i.test(t),
-      ) ||
-      new Set(targets.map((t) => t.toLowerCase())).size !== targets.length
-    )
-      return invalid(
-        "Set ENV_SYNC_TARGET_FILES to distinct comma-separated local .env filenames, without directories or examples.",
-      );
     const backupDir = value("ENV_SYNC_BACKUP_DIR") || undefined;
     if (backupDir && !isAbsolute(backupDir))
       return invalid(
@@ -56,7 +44,6 @@ export function loadSettings() {
       json: json === "true",
       skipBackup: skip === "true",
       help: help === "true",
-      targets,
       backupDir,
     } as const;
   } catch {

@@ -22,6 +22,7 @@ import { privateWrite, protect } from "./private-files.js";
 type Code =
   | "USAGE"
   | "GIT_SAFETY"
+  | "INVALID_MANIFEST"
   | "INVALID_ENV"
   | "UNSAFE_PATH"
   | "BASELINE_UNAVAILABLE"

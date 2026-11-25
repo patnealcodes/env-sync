@@ -1,18 +1,20 @@
 #!/usr/bin/env node
 import { loadBaseline } from "./git.js";
 import type { Baseline } from "./dotenv.js";
+import { scanManifest, syncPlan } from "./manifest.js";
 import { loadSettings } from "./settings.js";
 import { createInterface } from "node:readline";
 import { syncWorkflow, type SyncResult, type Prompt } from "./workflow.js";
 
 const usage =
-  "Usage: env-sync [--json] [--no-backup] [--since <ref>] [--remove-key NAME] [<example-file> <local-file>]";
+  "Usage: env-sync [--scan] [--json] [--no-backup] [--since <ref>] [--remove-key NAME] [<example-file> <local-file>]";
 const helpText =
   usage +
-  "\nWith no paths, sync .env.example to ENV_SYNC_TARGET_FILES (default: .env). Settings come from .env in the working directory.\n--json emits one value-free result per target. --no-backup skips backup creation, not removal consent.\n--since compares example defaults with a Git revision. Repeat --remove-key NAME to authorize specific removals for one target.";
+  "\n--scan recursively adds template paths to the JSON .envsync.json file; it does not sync targets. With no paths, use .envsync.json or discover templates in the current directory only. Settings come from .env in the working directory.\n--json emits one value-free result per target. --no-backup skips backup creation, not removal consent.\n--since compares example defaults with a Git revision. Repeat --remove-key NAME to authorize specific removals for one target.";
 const args: string[] = [];
 let json = false,
   skipBackup = false,
+  scan = false,
   help = false,
   invalidOption = false,
   endOptions = false;
@@ -23,6 +25,7 @@ for (let i = 0; i < argv.length; i++) {
   const arg = argv[i];
   if (arg === undefined) continue;
   if (!endOptions && arg === "--") endOptions = true;
+  else if (!endOptions && arg === "--scan") scan = true;
   else if (!endOptions && arg === "--json") json = true;
   else if (!endOptions && arg === "--no-backup") skipBackup = true;
   else if (!endOptions && (arg === "--since" || arg === "--remove-key")) {
@@ -198,6 +201,28 @@ function showHelp() {
 
 async function main() {
   if (help) return showHelp();
+  if (scan) {
+    if (
+      invalidOption ||
+      args.length ||
+      skipBackup ||
+      since !== undefined ||
+      permitted.size
+    )
+      return report({
+        ok: false,
+        code: "USAGE",
+        message: "Use env-sync --scan [--json] without sync flags or paths.",
+      });
+    const result = scanManifest();
+    if (!result.ok) return report(result);
+    if (json) console.log(JSON.stringify(result));
+    else
+      console.log(
+        `.envsync.json: ${result.status} (${result.added} new sources). No dotenv files synced.`,
+      );
+    return 0;
+  }
   const config = loadSettings();
   if (!config.ok) {
     json ||=
@@ -214,23 +239,32 @@ async function main() {
     (args.length !== 0 && (args.length !== 2 || !example || !local))
   )
     return report({ ok: false, code: "USAGE", message: usage });
-  const targets = local ? [local] : config.targets;
+  const plan =
+    example && local
+      ? ({ ok: true, pairs: [{ example, target: local }] } as const)
+      : syncPlan();
+  if (!plan.ok) return report(plan);
+  const targets = plan.pairs;
   if (permitted.size && targets.length !== 1)
     return report({
       ok: false,
       code: "USAGE",
       message: "Use --remove-key with a single target to scope your approval.",
     });
-  const baseline =
-    since === undefined
-      ? undefined
-      : loadBaseline(example ?? ".env.example", since);
-  if (baseline && !baseline.ok) return report(baseline);
+  const baselines = new Map<string, Baseline>();
+  if (since !== undefined) {
+    for (const pair of targets) {
+      if (baselines.has(pair.example)) continue;
+      const baseline = loadBaseline(pair.example, since);
+      if (!baseline.ok) return report(baseline);
+      baselines.set(pair.example, baseline.tokens);
+    }
+  }
   if (!json)
     console.log(
       `${paint("env-sync", "1;36")} · ${targets.length} ${targets.length === 1 ? "file" : "files"}`,
     );
-  for (const [index, target] of targets.entries()) {
+  for (const [index, { example: template, target }] of targets.entries()) {
     if (!json) {
       // Explicit paths may contain terminal controls. Never render them verbatim.
       const pathLabel = target.replace(
@@ -242,12 +276,7 @@ async function main() {
       );
     }
     const status = report(
-      await run(
-        example ?? ".env.example",
-        target,
-        config.backupDir,
-        baseline?.tokens,
-      ),
+      await run(template, target, config.backupDir, baselines.get(template)),
     );
     if (status !== 0) return status;
   }
