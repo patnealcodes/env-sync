@@ -19,11 +19,12 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "prepare": "npm run build",
+    "prepare": "npm run build && husky",
     "test": "npm run build && vitest run"
   },
   "devDependencies": {
     "@types/node": "22.19.17",
+    "husky": "^9.1.7",
     "typescript": "5.9.3",
     "vitest": "4.1.11"
   }

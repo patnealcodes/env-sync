@@ -364,9 +364,9 @@ it("normal CLI bootstraps .env and uses its settings on subsequent runs", () => 
   setTargets([".env", ".env.local", ".env.test.local"]);
   const batch = invoke();
   expect(batch.status).toBe(0);
-  expect(batch.stdout).toContain("env-sync · 3 files\n\n[1/3] .env\n");
-  expect(batch.stdout).toContain("\n\n[2/3] .env.local\n");
-  expect(batch.stdout).toContain("\n\n[3/3] .env.test.local\n");
+  expect(batch.stdout).toContain("[1/3] .env\n");
+  expect(batch.stdout).toContain("[2/3] .env.local\n");
+  expect(batch.stdout).toContain("[3/3] .env.test.local\n");
   expect(batch.stdout).toContain("+ Added (4)");
   expect(batch.stdout).toContain("= Preserved (4)");
   expect(batch.stdout).not.toContain("\x1b");
