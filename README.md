@@ -1,4 +1,6 @@
-<img src="assets/env-sync-logo.svg" alt="env-sync" width="384">
+<p align="center">
+    <img src="assets/env-sync-mark.svg" alt="env-sync" width="128">
+</p>
 
 # env-sync
 
